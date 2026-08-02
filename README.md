@@ -64,9 +64,8 @@ Each of these cost us hours or days to find. The script handles all of them:
 2. The image boots into **Steam Big Picture** ("gaming mode"). That's normal — there's no desktop visible yet.
 3. Get the console online:
    - **Ethernet:** just plug it in.
-   - **Wi-Fi:** in Big Picture: Settings → Network, join your network (works with the gamepad) — **or just let the script do it**: step 1 offers to connect and saves Wi-Fi as a *system-wide* connection (auto-connects at boot). This is the better path: it stores the password in NetworkManager itself, so you don't get the repeated KWallet/password prompts that the desktop's network applet causes (the applet keeps secrets in KDE Wallet; a system connection needs no wallet). If a manual `nmcli` connect ever fails with `Secrets were required, but not provided` — an earlier GUI attempt left a KWallet-backed profile; delete it once (`sudo nmcli connection delete "SSID"`) and reconnect (the script does this automatically).
+   - **Wi-Fi:** Big Picture's own network settings **can't connect you on this image** — let **the script** do it: step 1 offers to connect (keyboard needed once to type SSID/password — over SSH or a USB keyboard) and saves Wi-Fi as a *system-wide* connection (auto-connects at boot). This is also the better path in general: it stores the password in NetworkManager itself, so you don't get the repeated KWallet/password prompts that the desktop's network applet causes (the applet keeps secrets in KDE Wallet; a system connection needs no wallet). If a manual `nmcli` connect ever fails with `Secrets were required, but not provided` — an earlier GUI attempt left a KWallet-backed profile; delete it once (`sudo nmcli connection delete "SSID"`) and reconnect (the script does this automatically).
 4. **Find the console's IP address** — you'll need it for SSH. Any of these works:
-   - Big Picture → Settings → Network → your connection shows the IP, or
    - your router's client list, or
    - from a terminal on the console (see below): `ip -o -4 addr show scope global | awk '{print $2, $4}'`
 
@@ -188,26 +187,9 @@ After the script finishes: **reboot** (so the udev rule takes effect from boot).
 
 ---
 
-## Part 5 — Verify everything works
+## Part 5 — Add the tiles to Steam (+ artwork)
 
-| Check | Command / action | Expected result |
-|---|---|---|
-| Phantom BT interface gone | `ls /sys/class/bluetooth/` | only `hci0` (a `hci1` here means the kernel bug is present and the rule didn't load) |
-| Pairing policy | `grep -E 'JustWorksRepairing\|PairableTimeout' /etc/bluetooth/main.conf` | `JustWorksRepairing=always` and `PairableTimeout=0` |
-| NetworkManager running | `systemctl is-active NetworkManager` | `active` (if `inactive`: `sudo systemctl start NetworkManager` — see bug #8) |
-| SSH survives reboot | from your PC: `ssh steam@<ip>` | connects |
-| Boot behavior | reboot the console | lands in Big Picture automatically |
-| Pad reconnect | after reboot, tap **PS** once | connects by itself, no re-pairing |
-| Pad actually works | `cat /proc/bus/input/devices \| grep -A4 -i dualsense` | lists the pad (gamepad, motion, touchpad) |
-| Session switch | "Switch to Desktop" tile in Big Picture | desktop appears in ~15 s; Steam's "Switch to Gaming Mode" button brings you back |
-
-The full troubleshooting table (black screens, Wi-Fi quirks, package errors, and more) is in the companion **`PS5-Linux-Cheatsheet.pdf`**.
-
----
-
-## One-time afterwards: add the tiles to Steam (+ artwork)
-
-The script creates the two `.desktop` entries ("Switch to Desktop" and "Pair DualSense"), but **Big Picture only lists them after you add them as non-Steam games once — and that requires desktop-mode Steam.** So yes: you have to visit the desktop once. Two minutes:
+The script creates the two `.desktop` entries ("Switch to Desktop" and "Pair DualSense"), but **Big Picture only lists them after you add them as non-Steam games once — and that requires desktop-mode Steam.** So yes: you have to visit the desktop once — and it has to happen *before* the verification in Part 6, which checks the tiles. Two minutes:
 
 1. From SSH (or a tty): `bash ~/switch-to-desktop.sh` — the desktop appears in ~15 s.
 2. Open **Steam** on the desktop → **Games → Add a Non-Steam Game…** → tick **"Switch to Desktop"** and **"Pair DualSense (Bluetooth)"** → *Add Selected Programs*.
@@ -226,12 +208,29 @@ Copy the folder to the console (`scp -r artwork steam@<ip>:~/` or USB stick), th
 
 ---
 
+## Part 6 — Verify everything works
+
+| Check | Command / action | Expected result |
+|---|---|---|
+| Phantom BT interface gone | `ls /sys/class/bluetooth/` | only `hci0` (a `hci1` here means the kernel bug is present and the rule didn't load) |
+| Pairing policy | `grep -E 'JustWorksRepairing\|PairableTimeout' /etc/bluetooth/main.conf` | `JustWorksRepairing=always` and `PairableTimeout=0` |
+| NetworkManager running | `systemctl is-active NetworkManager` | `active` (if `inactive`: `sudo systemctl start NetworkManager` — see bug #8) |
+| SSH survives reboot | from your PC: `ssh steam@<ip>` | connects |
+| Boot behavior | reboot the console | lands in Big Picture automatically |
+| Pad reconnect | after reboot, tap **PS** once | connects by itself, no re-pairing |
+| Pad actually works | `cat /proc/bus/input/devices \| grep -A4 -i dualsense` | lists the pad (gamepad, motion, touchpad) |
+| Session switch | "Switch to Desktop" tile in Big Picture (added in Part 5) | desktop appears in ~15 s; Steam's "Switch to Gaming Mode" button brings you back |
+
+The full troubleshooting table (black screens, Wi-Fi quirks, package errors, and more) is in the companion **`PS5-Linux-Cheatsheet.pdf`**.
+
+---
+
 ## Daily use notes
 
 - **Using the pad on the PS5 OS steals it.** If you use the DualSense on the PlayStation side (jailbreak menu, games), it forgets Linux. Back in Linux: plug the pad in via USB (it works as a wired controller), run the **"Pair DualSense" tile** (~60 s, follow the pop-ups), unplug when it says SUCCESS. No PC, no keyboard. The pop-ups are timed zenity dialogs (they auto-close — you don't need to click anything); every step also lands in `/tmp/pair-tile.log`, so if a popup ever fails to appear you can `cat /tmp/pair-tile.log` over SSH and just follow the light bar: double-blink = pairing mode, solid = connected.
-- **Other pads** (DS4, Switch Pro, …) pair normally from the desktop's Bluetooth settings or with `bluetoothctl` — the repairing quirk is DualSense-specific.
+- **Other pads** (DS4, Switch Pro, …) *should* pair normally from the desktop's Bluetooth settings or with `bluetoothctl` — the re-pairing quirk this repo works around is DualSense-specific, and nothing here changes the standard BlueZ path other devices use. (**Not tested on this image** — we only had a DualSense; reports welcome.)
 - **Fan + boost:** `~/boost-on.sh` (always enable the fan together with boost — that's what the official PS5 OS does).
-- **Re-flashed the image?** Just repeat Parts 3–5. The script is idempotent.
+- **Re-flashed the image?** Just repeat Parts 3–6. The script is idempotent.
 - **"Why does the desktop keep asking for my password?"** Two sources, both fixed by the script: *polkit* (GUI admin actions — step 14 installs a rule letting user `steam` do them without prompts; appropriate for a single-user couch console, not for multi-user machines) and *KDE Wallet* (the secret vault nagging to be unlocked — step 14 disables it; Wi-Fi is stored system-wide, so nothing needs the wallet). Terminal `sudo` still asks, by design.
 
 ---
@@ -312,7 +311,7 @@ Game files, Wi-Fi credentials, and Steam controller layouts are user data — th
 
 ## Disclaimer
 
-Provided as-is, without warranty. Jailbreaking and running Linux on your console is your own responsibility. Pair only controllers you own.
+Provided as-is, without warranty. Jailbreaking and running Linux on your console is your own responsibility.
 
 ## License
 
