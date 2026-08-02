@@ -2,11 +2,11 @@
 
 One idempotent setup script for a jailbroken PS5 running the **ps5-linux CachyOS gaming image** (gamescope + Steam Big Picture). Run it once after a re-flash and the console comes back fully configured — including fixes for several bugs that are documented nowhere else.
 
-Tested on a PS5 (7.20 jailbreak), kernel 7.1.3.
+Tested on a PS5 (7.20 jailbreak), kernels 7.1.3–7.1.4 (official ps5-linux images).
 
 **This README is written for beginners.** If you have never touched Linux on a PS5 before, start at Part 0 and follow the parts in order. If you know what you're doing, the [Quick reference](#quick-reference-for-experienced-users) is all you need.
 
-> **Reading the commands:** anything in `<angle brackets>` is a placeholder — replace it with your own value, **without** the brackets. Example: `ssh steam@<ip>` becomes `ssh steam@192.168.178.75`. Everything else is typed exactly as shown.
+> **Reading the commands:** anything in `<angle brackets>` is a placeholder — replace it with your own value, **without** the brackets. Example: `ssh steam@<ip>` becomes `ssh steam@192.168.178.99`. Everything else is typed exactly as shown.
 
 ---
 
