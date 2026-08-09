@@ -1,6 +1,6 @@
 #!/bin/bash
 # ==========================================================
-#  PS5-LINUX FINAL SETUP (CachyOS gaming image) — v21
+#  PS5-LINUX FINAL SETUP (CachyOS gaming image) — v25
 #  Lives on the console: ~/ps5-final.sh
 #  Usage:
 #    ~/ps5-final.sh         full setup + optional pairing/desktop
@@ -116,6 +116,18 @@
 #  v21: all prompts visible without a TTY (echo + read -t), bond removal
 #  asks again (non-destructive default) — v20's auto-remove could eat a
 #  second pad's bond.
+#  v25: Wi-Fi resilience (battle-tested 2026-08-09 against induced module
+#  kills, PCI unbinds and a REAL firmware wedge). New step 9/16 installs
+#  wifi-ensure.service: a watchdog that checks the link every 15 s and, on
+#  failure, captures a forensic bundle BEFORE touching anything, then
+#  climbs a ladder — nmcli reconnect -> link bounce + wpa_supplicant/NM
+#  restart (stale supplicant handles: "couldn't grab this interface") ->
+#  moal+mlan driver reload -> PCI function-level chip reset (the ONLY cure
+#  for a wedged firmware: moal's auto_fw_reload=0 keeps the FW running
+#  across plain module reloads, so only a chip reset forces a fresh FW
+#  download). Also: wifi.powersave=2 persisted (the #1 dropout cause),
+#  iw + wireless-regdb installed, ps5-iw620.conf re-asserted (overrides
+#  the image's moal.conf ps_mode=2 alphabetically).
 #  Interactive: opinionated steps ask [Y/n] (Enter = default).
 #  Core system steps always run (BT stack, Wi-Fi driver, ps5-linux-tools,
 #  SSH, session machinery); app choices (keymap, screensaver, Firefox,
@@ -347,7 +359,7 @@ if [ "${1:-}" = "pair" ]; then
   exit 0
 fi
 
-say "1/15 Internet check + Wi-Fi setup"
+say "1/16 Internet check + Wi-Fi setup"
 # NM is 'enabled' but intermittently NEVER STARTS at boot (zero NM lines in
 # the journal until started by hand — observed on cold AND warm boots; the
 # boot transaction sometimes just doesn't pull it in). Two layers:
@@ -409,7 +421,7 @@ if nmcli -t -f DEVICE,TYPE,STATE device 2>/dev/null | grep -q ':wifi:disconnecte
   fi
 fi
 
-say "2/15 System update (rolling-release sync)"
+say "2/16 System update (rolling-release sync)"
 echo "The image is a rolling release and may be weeks old. Installing NEW packages"
 echo "onto an OLD base breaks them (real case: firefox needs GLIBC_2.44, the image"
 echo "shipped an older glibc -> 'Couldn't load XPCOM'). A full upgrade first avoids"
@@ -421,7 +433,7 @@ else
   echo "skipped — note: freshly installed apps may fail with GLIBC version errors"
 fi
 
-say "3/15 Keyboard layout"
+say "3/16 Keyboard layout"
 while true; do
   echo "Console keymap [de]:"; read -t 60 KM || true
   KM=${KM:-de}
@@ -430,11 +442,11 @@ while true; do
 done
 localectl | grep -i keymap || true
 
-say "4/15 Quiet kernel console spam"
+say "4/16 Quiet kernel console spam"
 echo 'kernel.printk = 3 4 1 3' | sudo tee /etc/sysctl.d/20-quiet-printk.conf
 sudo sysctl -p /etc/sysctl.d/20-quiet-printk.conf
 
-say "5/15 Bluetooth kernel fixes (hid-playstation + phantom-interface rule)"
+say "5/16 Bluetooth kernel fixes (hid-playstation + phantom-interface rule)"
 # v10: NO ERTM/SC hacks — both break the DualSense's HID channel.
 # Clean up relics from older script versions:
 sudo rm -f /etc/modprobe.d/bluetooth-ertm.conf
@@ -467,7 +479,7 @@ else
   echo "hci0 only — clean (fixed kernel, or rule already active)"
 fi
 
-say "6/15 SSH server"
+say "6/16 SSH server"
 sudo systemctl enable --now sshd 2>/dev/null && echo "sshd active"
 echo "Install an SSH public key for password-less login from your PC? [y/N]:"
 read -t 60 SK || true
@@ -485,7 +497,7 @@ if [[ "$SK" =~ ^[Yy]$ ]]; then
   fi
 fi
 
-say "7/15 Stock BlueZ + kernel HID path (hidp, NOT userspace)"
+say "7/16 Stock BlueZ + kernel HID path (hidp, NOT userspace)"
 sudo sed -i 's/^IgnorePkg.*/#IgnorePkg   =/' /etc/pacman.conf
 sudo pacman -S --noconfirm bluez bluez-libs bluez-utils
 # v10: UserspaceHID=false — the userspace uhid path never created an input
@@ -511,7 +523,7 @@ sudo systemctl restart bluetooth
 sleep 2
 bluetoothctl --version
 
-say "8/15 NXP mwifiex driver + combo firmware (LONG on first run)"
+say "8/16 NXP mwifiex driver + combo firmware (LONG on first run)"
 if [ -f /lib/firmware/nxp/pcieuartiw620_combo_v1.bin ] && [ -d "/lib/modules/$(uname -r)/extra/ps5-iw620" ]; then
   echo "firmware + modules already present — skipping"
 else
@@ -521,7 +533,304 @@ else
   cd ps5-linux-mwifiex && sudo ./install.sh && cd ~
 fi
 
-say "9/15 ps5-linux-tools (fan + boost automatically at boot)"
+say "9/16 Wi-Fi resilience (power save off + wifi-ensure watchdog)"
+# Three stacked hardening layers, battle-tested against induced module
+# kills, PCI unbinds and a REAL firmware wedge (2026-08-09):
+sudo pacman -S --needed --noconfirm iw wireless-regdb
+# 1. Power save is the #1 silent-dropout cause on this chip - persist it
+#    off (NM applies it from the next connect; no restart needed here).
+printf '[connection]\nwifi.powersave = 2\n' | sudo tee /etc/NetworkManager/conf.d/99-wifi-powersave-off.conf
+echo "Wi-Fi power save disabled (persistent)"
+# 2. Driver level: the image's moal.conf sets ps_mode=2; ps5-iw620.conf
+#    wins alphabetically with ps_mode=0. Re-assert (idempotent):
+cat <<'MOALEOF' | sudo tee /etc/modprobe.d/ps5-iw620.conf >/dev/null
+# PS5 IW620: overrides moal.conf (alphabetically later) - power save OFF
+softdep moal pre: cfg80211 mlan
+options moal fw_name=nxp/pcieuartiw620_combo_v1.bin pcie_int_mode=1 drv_mode=1 cfg80211_wext=4 sta_name=mlan ext_scan=1 auto_fw_reload=0 wifi_reset_config=0 sched_scan=0 ps_mode=0 auto_ds=0 amsdu_disable=0
+MOALEOF
+# 3. wifi-ensure watchdog: checks the link every 15 s; on failure captures
+#    a forensic bundle FIRST, then climbs: nmcli reconnect -> link bounce
+#    + wpa_supplicant/NM restart -> moal+mlan driver reload -> PCI
+#    function-level chip reset. Loop guard: 3 failed rounds -> 10 min off.
+cat <<'WIFIEOF' | sudo tee /usr/local/bin/wifi-ensure.sh >/dev/null
+#!/bin/bash
+# ==========================================================
+#  wifi-ensure.sh — v1.2
+#  Wi-Fi watchdog for Linux on the PS5 (Marvell moal/mlan vendor driver).
+#  v1.1: bounce wpa_supplicant in steps 2+3 (after a driver reload the
+#  supplicant keeps the dead interface handle: "wpa_supplicant couldn't
+#  grab this interface" - NM restarts alone do NOT fix that), longer
+#  settle after driver reload, and a recovery loop guard.
+#  v1.2: step 4 - PCI function-level chip reset. The moal config keeps
+#  the firmware running across module reloads (auto_fw_reload=0), so a
+#  plain reload can never cure a wedged FW ("WLAN FW already running!
+#  Skip FW download"). Unbind + unload + FLR forces the CHIP to re-init
+#  and re-download its firmware. Proven on IW620: recovered a fw-wedged
+#  chip with zero console reboot.
+#  v1.3: step 4 device discovery hardened. After a hard kill the interface
+#  is already gone and this chip does NOT report PCI class 0x0280, so the
+#  old class-based scan found nothing and step 4 gave up. Now the PCI
+#  address is cached after every HEALTHY check, with wlan_pcie binding /
+#  Marvell vendor (0x11ab) matching as fallback - and the ethernet NIC
+#  (also network-class) can never be matched by accident.
+#  v1.3.1: cosmetic - step 3 tries mainline mwifiex only if the image
+#  actually ships it (kills FATAL noise on moal-only images).
+#
+#  Symptom it guards against: wireless silently dies after some
+#  uptime (associated-but-dead, or fully dropped) and only a
+#  reboot brings it back.
+#
+#  Every CHECK_EVERY seconds it verifies association + gateway
+#  reachability. After FAILS_NEEDED consecutive failures it:
+#    1. captures a forensic bundle (dmesg, NM journal, link state)
+#       BEFORE touching anything, so the failure cause survives
+#    2. escalates recovery: nmcli reconnect -> link bounce ->
+#       mwifiex driver reload, verifying after each step
+#    3. logs what fixed it (or that nothing did -> cold boot)
+#
+#  Log: ~/wifi-ensure.log  (auto-truncated at ~2 MB)
+#  Install: see wifi-ensure.service (runs as root via systemd).
+# ==========================================================
+CHECK_EVERY=15     # seconds between checks
+FAILS_NEEDED=2     # consecutive failures before acting (~30 s)
+LOG="$(getent passwd 1000 | cut -d: -f6)/wifi-ensure.log"
+[ -w "$(dirname "$LOG")" ] || LOG=/var/log/wifi-ensure.log
+STATE=/run/wifi-ensure-pci-dev   # last known PCI address of the wifi chip
+
+log(){ echo "[$(date '+%F %T')] $*" >> "$LOG"; }
+
+iface(){
+  local i=""
+  if command -v iw >/dev/null 2>&1; then
+    i=$(iw dev 2>/dev/null | awk '$1=="Interface"{print $2; exit}')
+  fi
+  if [ -z "$i" ] && command -v nmcli >/dev/null 2>&1; then
+    i=$(nmcli -t -f DEVICE,TYPE device 2>/dev/null | awk -F: '$2=="wifi"{print $1; exit}')
+  fi
+  [ -z "$i" ] && i=$(ls /sys/class/net 2>/dev/null | grep -m1 -E '^(wlan|mlan)')
+  echo "$i"
+}
+
+gw(){ ip route 2>/dev/null | awk '/^default via/{print $3; exit}'; }
+
+connected(){
+  local i g
+  i=$(iface); [ -n "$i" ] || return 1
+  if command -v iw >/dev/null 2>&1; then
+    iw dev "$i" link 2>/dev/null | grep -q '^Connected to' || return 1
+  elif command -v nmcli >/dev/null 2>&1; then
+    # NM state 100 = connected
+    nmcli -t -f GENERAL.STATE device show "$i" 2>/dev/null | grep -q ':100' || return 1
+  else
+    [ "$(cat /sys/class/net/"$i"/carrier 2>/dev/null)" = "1" ] || return 1
+  fi
+  g=$(gw); [ -n "$g" ] || return 0
+  # bind to the wifi interface: with ethernet up, a plain ping could succeed
+  # via the cable while wifi is secretly dead
+  ping -c1 -W2 -I "$i" "$g" >/dev/null 2>&1
+}
+
+# Wi-Fi disabled ON PURPOSE (NM radio off or rfkill soft-block)?
+# Then stand down: never fight a deliberate user choice (e.g. ethernet-only).
+wifi_disabled(){
+  if command -v nmcli >/dev/null 2>&1; then
+    [ "$(nmcli radio wifi 2>/dev/null)" = "disabled" ] && return 0
+  fi
+  rfkill list 2>/dev/null | grep -iA1 'wireless\|wlan\|phy' | \
+    grep -q 'Soft blocked: yes' && return 0
+  return 1
+}
+
+nm_restart(){
+  systemctl cat NetworkManager.service >/dev/null 2>&1 && \
+    systemctl restart NetworkManager
+}
+
+# After a driver reload the supplicant clings to the DEAD interface handle
+# (NM log: "wpa_supplicant couldn't grab this interface", endless re-acquire
+# retries). Restarting NetworkManager does NOT bounce it - bounce it first.
+supplicant_restart(){
+  systemctl cat wpa_supplicant.service >/dev/null 2>&1 && \
+    systemctl restart wpa_supplicant
+}
+
+forensics(){
+  local i; i=$(iface)
+  {
+    echo "====================  $1  $(date '+%F %T')  ===================="
+    echo "--- uname: $(uname -r)"
+    if command -v iw >/dev/null 2>&1; then
+      echo "--- iw dev:"; iw dev 2>&1
+      echo "--- link ($i):"; iw dev "$i" link 2>&1
+      echo "--- power_save:"; iw dev "$i" get power_save 2>&1
+    else
+      echo "--- nmcli devices:"; nmcli -t -f DEVICE,TYPE,STATE device 2>&1
+      echo "--- nmcli $i:"; nmcli device show "$i" 2>&1 | grep -E 'GENERAL\.(STATE|CONNECTION)|IP4\.ADDRESS'
+    fi
+    echo "--- ip addr:"; ip -brief addr 2>&1
+    echo "--- routes:"; ip route 2>&1
+    echo "--- rfkill:"; rfkill list 2>&1
+    echo "--- dmesg (mwifiex/wlan tail):"
+    dmesg 2>&1 | grep -iE 'mwifiex|mlan|wlan|ieee80211|cfg80211|timeout' | tail -40
+    echo "--- NetworkManager journal (this boot, tail):"
+    journalctl -u NetworkManager -b --no-pager 2>&1 | tail -30
+    echo
+  } >> "$LOG"
+}
+
+# Find the Wi-Fi PCI device even when unbound/no interface exists.
+# Never matches the ethernet NIC: only the Marvell vendor driver binding
+# or a Marvell-vendor (0x11ab) network-class device qualifies.
+find_pci_wifi(){
+  local d
+  for d in /sys/bus/pci/drivers/wlan_pcie/0000:*; do
+    [ -e "$d" ] && { basename "$d"; return; }
+  done
+  for d in /sys/bus/pci/devices/*; do
+    [ -f "$d/class" ] && [ -f "$d/vendor" ] || continue
+    grep -qi '^0x02' "$d/class" && grep -qi '^0x11ab' "$d/vendor" && { basename "$d"; return; }
+  done
+}
+
+recover(){
+  local i g DEV0=""
+  i=$(iface); g=$(gw)
+  # cache the PCI device now, while the interface may still exist
+  [ -n "$i" ] && DEV0=$(basename "$(readlink -f /sys/class/net/"$i"/device 2>/dev/null)")
+  log "FAILURE confirmed (iface=$i gw=$g) - capturing forensics, then recovering"
+  forensics "BEFORE-RECOVERY"
+
+  # step 1: plain NetworkManager reconnect
+  if command -v nmcli >/dev/null 2>&1 && [ -n "$i" ]; then
+    log "step 1: nmcli disconnect/connect $i"
+    nmcli device disconnect "$i" >>"$LOG" 2>&1; sleep 3
+    nmcli device connect "$i" >>"$LOG" 2>&1; sleep 8
+    connected && { log "RECOVERED at step 1 (nmcli reconnect)"; return 0; }
+  fi
+
+  # step 2: link bounce + supplicant/NM restart
+  log "step 2: ip link bounce + supplicant/NetworkManager restart"
+  [ -n "$i" ] && { ip link set "$i" down 2>>"$LOG"; sleep 2; ip link set "$i" up 2>>"$LOG"; }
+  supplicant_restart; sleep 2
+  nm_restart; sleep 15
+  connected && { log "RECOVERED at step 2 (link bounce + supplicant restart)"; return 0; }
+
+  # step 3: reload the Wi-Fi driver. PS5 images use Marvell's VENDOR driver
+  # (moal family, "wlan:" dmesg lines) rather than mainline mwifiex, so
+  # detect the module backing the interface live, then fall back to both
+  # known PS5 module families.
+  local DRV=""
+  [ -n "$i" ] && DRV=$(basename "$(readlink -f /sys/class/net/"$i"/device/driver 2>/dev/null)")
+  case "$DRV" in
+    ""|.*) DRV="";;                        # no driver link -> unknown
+    wlan_pcie|wlan_sdio) DRV="moal";;      # Marvell vendor driver -> module name
+  esac
+  log "step 3: wifi driver reload (detected module: ${DRV:-unknown})"
+  if [ -n "$DRV" ]; then
+    modprobe -r "$DRV" 2>>"$LOG"; sleep 3
+    modprobe "$DRV" 2>>"$LOG"; sleep 5
+    supplicant_restart; sleep 2
+    nm_restart; sleep 20
+    connected && { log "RECOVERED at step 3 (driver reload: $DRV)"; return 0; }
+  fi
+  log "step 3 fallback: trying moal+mlan module reload"
+  # moal sits on mlan; a real firmware reload needs BOTH gone (the wedge cure).
+  modprobe -r moal mlan 2>>"$LOG"; sleep 3
+  modprobe mlan 2>>"$LOG"; modprobe moal 2>>"$LOG"
+  # mainline stack only if the image actually ships it (avoids FATAL noise)
+  if modinfo mwifiex_sdio >/dev/null 2>&1; then
+    modprobe -r mwifiex_sdio mwifiex 2>>"$LOG"
+    modprobe mwifiex_sdio 2>>"$LOG"
+  fi
+  sleep 5
+  supplicant_restart; sleep 2
+  nm_restart; sleep 20
+  connected && { log "RECOVERED at step 3 (fallback module reload)"; return 0; }
+
+  # step 4: PCI function-level chip reset (the HARD wedge cure). moal keeps
+  # the firmware running across module reloads, so step 3 can never reset a
+  # wedged FW. Unbind + unload + FLR forces the CHIP itself to re-init and
+  # re-download its firmware (dmesg then shows a real FW download, not
+  # "already running"). remove+rescan is the fallback if FLR is unsupported.
+  log "step 4: PCI function-level reset of the Wi-Fi chip"
+  local DEV="$DEV0" DRVLINK=""
+  [ -z "$DEV" ] && [ -f "$STATE" ] && DEV=$(cat "$STATE" 2>/dev/null)
+  [ -z "$DEV" ] && DEV=$(find_pci_wifi)
+  if [ -z "$DEV" ]; then
+    log "step 4: no PCI wifi device found - giving up"
+  else
+    DRVLINK=$(readlink -f /sys/bus/pci/devices/"$DEV"/driver 2>/dev/null)
+    [ -n "$DRVLINK" ] && echo "$DEV" > "$DRVLINK"/unbind 2>>"$LOG"
+    modprobe -r moal mlan 2>>"$LOG"; sleep 1
+    if ! echo 1 > /sys/bus/pci/devices/"$DEV"/reset 2>>"$LOG"; then
+      log "step 4: FLR unsupported on $DEV - falling back to remove+rescan"
+      echo 1 > /sys/bus/pci/devices/"$DEV"/remove 2>>"$LOG"; sleep 2
+      echo 1 > /sys/bus/pci/rescan 2>>"$LOG"
+    fi
+    sleep 2
+    modprobe moal 2>>"$LOG"; sleep 5
+    supplicant_restart; sleep 2
+    nm_restart; sleep 20
+    connected && { log "RECOVERED at step 4 (PCI chip reset, DEV=$DEV)"; return 0; }
+  fi
+
+  log "NOT RECOVERED - wedged hard, a cold boot is the remaining cure"
+  forensics "AFTER-RECOVERY-FAILED"
+  return 1
+}
+
+# truncate runaway log (~2 MB cap, keeps the last 500 lines)
+if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt 2000000 ]; then
+  tail -500 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
+
+log "wifi-ensure v1.3.1 started (check every ${CHECK_EVERY}s, acting after $FAILS_NEEDED fails)"
+fails=0; recovery_rounds=0
+while :; do
+  if connected || wifi_disabled; then
+    fails=0; recovery_rounds=0
+    # cache the chip's PCI address while healthy - step 4 needs it when
+    # the interface (and sometimes the driver binding) is already gone
+    i=$(iface)
+    [ -n "$i" ] && basename "$(readlink -f /sys/class/net/"$i"/device 2>/dev/null)" > "$STATE" 2>/dev/null
+  else
+    fails=$((fails+1))
+    log "check failed ($fails/$FAILS_NEEDED) iface=$(iface) gw=$(gw)"
+    if [ "$fails" -ge "$FAILS_NEEDED" ]; then
+      recover && recovery_rounds=0 || recovery_rounds=$((recovery_rounds+1))
+      fails=0
+      if [ "$recovery_rounds" -ge 3 ]; then
+        # the ladder failed 3x running: stop hammering the chip, back off
+        log "3 failed recovery rounds - standing down 10 min (a reload loop helps nobody)"
+        sleep 600
+        recovery_rounds=0
+      fi
+      sleep 20   # let the stack settle before resuming checks
+    fi
+  fi
+  sleep "$CHECK_EVERY"
+done
+WIFIEOF
+sudo chmod +x /usr/local/bin/wifi-ensure.sh
+cat <<'SVCEOF' | sudo tee /etc/systemd/system/wifi-ensure.service >/dev/null
+[Unit]
+Description=PS5 Wi-Fi watchdog (wifi-ensure)
+After=NetworkManager.service network-online.target
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/wifi-ensure.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+SVCEOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now wifi-ensure.service && echo "wifi-ensure watchdog installed + active (log: ~/wifi-ensure.log)"
+
+say "10/16 ps5-linux-tools (fan + boost automatically at boot)"
 if systemctl is-enabled ps5fan.service >/dev/null 2>&1; then
   echo "already installed — skipping"
 else
@@ -536,7 +845,7 @@ else
   fi
 fi
 
-say "10/15 Helper scripts"
+say "11/16 Helper scripts"
 cat > ~/switch-to-desktop.sh <<'H1'
 #!/bin/bash
 # Switch to Desktop v7 - soft switch, zombie-proof, no watchdog
@@ -698,7 +1007,7 @@ update-desktop-database ~/.local/share/applications 2>/dev/null
 echo "created: ~/switch-to-desktop.sh, ~/rescue-gaming.sh, ~/boost-on.sh,"
 echo "         ~/pair-dualsense.sh, ~/pair-dualsense-tile.sh (+ Pair-DualSense tile)"
 
-say "11/15 Force 1080p output (capture-card setups ONLY)"
+say "12/16 Force 1080p output (capture-card setups ONLY)"
 cat <<'NOTE'
 WHAT THIS IS:
   The image locks the output resolution at BOOT time — Plasma display
@@ -778,7 +1087,7 @@ H8
 chmod +x ~/toggle-1080p.sh
 echo "helper installed: ~/toggle-1080p.sh (toggles the 1080p flag; reboot to apply)"
 
-say "12/15 Disable screensaver / auto-lock / display sleep"
+say "13/16 Disable screensaver / auto-lock / display sleep"
 echo "Disable screensaver/lock/display sleep? [Y/n]:"; read -t 60 SCR || true
 if [[ ! "$SCR" =~ ^[Nn]$ ]]; then
 KW=$(command -v kwriteconfig6 || command -v kwriteconfig5)
@@ -811,7 +1120,7 @@ else
   echo "skipped"
 fi
 
-say "13/15 Firefox browser"
+say "14/16 Firefox browser"
 echo "Install Firefox? [Y/n]:"; read -t 60 FF || true
 if [[ ! "$FF" =~ ^[Nn]$ ]]; then
   sudo pacman -Sy --needed --noconfirm firefox && echo "firefox installed"
@@ -819,7 +1128,7 @@ else
   echo "skipped"
 fi
 
-say "14/15 Desktop hardening (KWin X11 window manager + NM polkit rule)"
+say "15/16 Desktop hardening (KWin X11 window manager + NM polkit rule)"
 sudo pacman -Sy --needed --noconfirm plasma-x11-session kwin-x11 && echo "kwin-x11 installed"
 # polkit: single-user couch console — GUI admin actions (network, mounts,
 # power) should not demand a password. Don't use this on multi-user machines.
@@ -837,7 +1146,7 @@ KW=$(command -v kwriteconfig6 || command -v kwriteconfig5)
 [ -n "$KW" ] && $KW --file kwalletrc --group Wallet --key Enabled false \
   && echo "KDE Wallet disabled (re-enable: System Settings -> KDE Wallet)"
 
-say "15/15 Session machinery + app dependencies"
+say "16/16 Session machinery + app dependencies"
 echo "Install app deps (zenity for gaming-mode tile popups, Java 17, rsync/jq/xmlstarlet, fuse2 for AppImages, Ark, Kate)? [Y/n]:"; read -t 60 DEPS || true
 if [[ ! "$DEPS" =~ ^[Nn]$ ]]; then
   sudo pacman -Sy --needed --noconfirm zenity jre17-openjdk rsync jq xmlstarlet libnewt fuse2 ark kate \

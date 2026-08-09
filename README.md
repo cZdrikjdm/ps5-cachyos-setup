@@ -22,6 +22,7 @@ Each of these cost us hours or days to find. The script handles all of them:
 6. **Losing the pad to the PS5 OS** — using the DualSense on the PlayStation OS overwrites its pairing. The "Pair DualSense" tile re-pairs it from the couch, no PC and no keyboard needed (the pad works as a wired USB controller meanwhile).
 7. **Bluetooth dead after a warm reboot** — the NXP IW620 combo chip's BT side wedges on *warm* reboots (`hci0: command ... tx timeout` in dmesg) while Wi-Fi keeps working. The script detects a dead adapter and revives it by reloading `btusb`; a cold boot (re-running the payload) always resets it.
 8. **No network after boot (intermittent, cold AND warm)** — NetworkManager is `enabled` but the boot transaction sometimes never pulls it in (zero NM lines in the journal until started by hand; LAN *and* Wi-Fi dead). Fixed two ways: the script re-asserts `enable --now` on every run (fixes the current session), and installs `nm-ensure.service` — a boot watchdog hooked into both multi-user and graphical targets that force-starts NM at every boot. Immediate manual fix on an affected boot: `sudo systemctl start NetworkManager`.
+9. **Wi-Fi silently dies after some uptime — only a reboot brings it back** — three stacked layers, handled by step 9/16. Power save is the common cause (persisted off, at both connection and driver level). The rare killer is a **firmware wedge**: the stock moal config keeps the firmware running across module reloads (`auto_fw_reload=0`), so no amount of `modprobe` cycling resets it — only a PCI function-level reset does. And in between, `wpa_supplicant` can cling to a dead interface handle that an NM restart alone won't fix. `wifi-ensure.service` checks the link every 15 s, captures a forensic bundle *before* touching anything, then climbs the ladder: reconnect → link bounce + supplicant/NM restart → driver reload → PCI chip reset (with a loop guard, and it stands down if you turned Wi-Fi off on purpose). Every rung crash-tested against induced real failures; log: `~/wifi-ensure.log`.
 
 **Also included — machinery and options, not bug fixes:** a boot service that makes every cold boot land deterministically in gaming mode (the session tiles rely on it), and optional 1080p output forcing (`amdgpu.force_1080p=1`) — strictly a remedy for capture-card fallback-EDID problems, off by default, revertible at any time with `~/toggle-1080p.sh` (details in Part 4). The image fixes its output resolution at boot time and Plasma cannot change it afterwards — without the flag, you simply get whatever mode your display negotiated at boot.
 
@@ -126,8 +127,8 @@ scp .\ps5-final.sh steam@<ip>:~/
 
 ```bash
 sha256sum ~/ps5-final.sh
-# must print exactly:
-# 422341cf958288fc01b26edf455923592bff81b336b091577b9ec82007d96863
+# must print exactly (v25):
+# a13b247a08419bac15cc115862c8ed62026b7d09e25e872dcbb31f713d048e3d
 ```
 
 > If the hash doesn't match, the file got corrupted in transit (multi-line pastes into SSH terminals are notorious for this). **Do not run a file whose hash doesn't match** — transfer it again with one of the file-based methods above.
@@ -197,14 +198,14 @@ The script creates the two `.desktop` entries ("Switch to Desktop" and "Pair Dua
 
 Both tiles now live in your Big Picture library, usable with the gamepad.
 
-**Artwork (optional but nice):** the repo's `artwork/` folder ships a matching set for both tiles — capsule (600×900), hero/background (3840×1240), logo (1280×720, transparent), icon (128×128):
+**Artwork (optional but nice):** the repo's `artwork/` folder ships a complete reworked set for both tiles — grid-vertical capsule (600×900), grid-horizontal (460×215, plus 920×430 for HiDPI), heroes (3840×1240, plus a 1080p-friendly 1920×620), logo (1280×720, transparent), icon (256×256):
 
-| File | Tile |
+| Files | Tile |
 |---|---|
-| `switch-to-desktop-capsule/hero/logo/icon.png` | Switch to Desktop |
-| `pair-dualsense-capsule/hero/logo/icon.png` | Pair DualSense |
+| `transition_to_desktop_*.png` | Switch to Desktop |
+| `ds5-pairing-tool_*.png` | Pair DualSense |
 
-Copy the folder to the console (`scp -r artwork steam@<ip>:~/` or USB stick), then **on the desktop**, for each tile: Steam → Library → right-click the tile → **Manage → Set custom artwork** (the capsule) / **Set custom hero** (the background) / **Set custom logo** / and via the tile's properties, the icon. Per tile it's four clicks — do it once and Big Picture stops showing grey rectangles.
+Copy the folder to the console (`scp -r artwork steam@<ip>:~/` or USB stick), then **on the desktop**, for each tile: Steam → Library → right-click the tile → **Manage → Set custom artwork** (600×900 grid-vertical; the 460×215 / 920×430 grid-horizontal files cover the horizontal library views) / **Set custom hero** (3840×1240, or 1920×620 on a 1080p display) / **Set custom logo** / and via the tile's properties, the icon. Do it once per tile and Big Picture stops showing grey rectangles.
 
 ---
 
@@ -240,7 +241,7 @@ The full troubleshooting table (black screens, Wi-Fi quirks, package errors, and
 ```bash
 # transfer to the console, then:
 chmod +x ~/ps5-final.sh
-sha256sum ~/ps5-final.sh   # v24: 422341cf958288fc01b26edf455923592bff81b336b091577b9ec82007d96863
+sha256sum ~/ps5-final.sh   # v25: a13b247a08419bac15cc115862c8ed62026b7d09e25e872dcbb31f713d048e3d
 ~/ps5-final.sh             # full setup
 ~/ps5-final.sh pair        # DualSense pairing only
 ```
@@ -304,6 +305,7 @@ Notes for this image: Steam's menu entry "Switch to Desktop" never calls the ses
 | `~/rescue-gaming.sh` | emergency return to gaming mode |
 | `~/boost-on.sh` | fan + CPU/GPU boost |
 | `~/toggle-1080p.sh` | toggles the optional 1080p boot flag in `cmdline.txt` (active from next boot) — the easy revert |
+| `/usr/local/bin/wifi-ensure.sh` + `wifi-ensure.service` | Wi-Fi watchdog: auto-recovers dead Wi-Fi (reconnect → supplicant/NM restart → driver reload → PCI chip reset), forensic log in `~/wifi-ensure.log` |
 
 ## What it deliberately does NOT do
 
